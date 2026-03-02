@@ -6,6 +6,7 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  LabelList,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -208,7 +209,9 @@ export default function Home() {
                   />
                   <Tooltip
                     formatter={(value) =>
-                      typeof value === "number" ? [`${value} kg`, "体重"] : [value, "体重"]
+                      typeof value === "number"
+                        ? [`${value} kg`, "体重"]
+                        : [value, "体重"]
                     }
                     labelFormatter={(label) => `日付: ${label}`}
                   />
@@ -217,10 +220,16 @@ export default function Home() {
                     dataKey="weight"
                     stroke="#3b82f6"
                     strokeWidth={2}
-                    dot={false}
-                    connectNulls={false}
+                    dot={{ r: 3, strokeWidth: 0, fill: "#3b82f6" }}
+                    connectNulls
                     isAnimationActive={false}
-                  />
+                  >
+                    <LabelList
+                      dataKey="weight"
+                      position="top"
+                      className="text-[10px] fill-slate-500"
+                    />
+                  </Line>
                 </LineChart>
               </ResponsiveContainer>
             </div>
