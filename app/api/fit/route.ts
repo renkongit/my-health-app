@@ -241,7 +241,8 @@ async function fetchWeightTrend(accessToken: string): Promise<WeightTrendPoint[]
       startTimeMillis,
       endTimeMillis,
       aggregateBy: [{ dataTypeName: "com.google.weight" }],
-      bucketByTime: { durationMillis: DAY_MS },
+      // 期間全体を1バケットにして、こちらで30日分に日単位で集計する
+      bucketByTime: { durationMillis: endTimeMillis - startTimeMillis },
     }),
   });
 
@@ -251,23 +252,38 @@ async function fetchWeightTrend(accessToken: string): Promise<WeightTrendPoint[]
   }
 
   const data = (await res.json()) as AggregateResponse;
-  const buckets = data.bucket ?? [];
-  if (buckets.length === 0) {
-    return Array.from({ length: DAYS }).map((_, i) => {
-      const dayStart = startTimeMillis + i * DAY_MS;
-      return { date: formatYmdJst(dayStart), weight: null };
-    });
+  const bucket = data.bucket?.[0];
+  const points = bucket?.dataset?.[0]?.point ?? [];
+
+  // 日ごとの最新値を保持するバッファ
+  const perDay: Array<{ value: number; startNanos: bigint } | null> = Array(
+    DAYS
+  ).fill(null);
+
+  for (const p of points) {
+    if (!p.startTimeNanos) continue;
+    const startNanos = BigInt(p.startTimeNanos);
+    const ms = Number(startNanos / BigInt(1_000_000));
+    const dayIndex = Math.floor((ms - startTimeMillis) / DAY_MS);
+    if (dayIndex < 0 || dayIndex >= DAYS) continue;
+
+    const v = getNumericValue(p);
+    if (v == null) continue;
+
+    const current = perDay[dayIndex];
+    if (!current || startNanos > current.startNanos) {
+      perDay[dayIndex] = { value: v, startNanos };
+    }
   }
 
-  // 返却が 30 日より多い/少ないケースに備えて末尾 30 件に揃える
-  const lastBuckets = buckets.slice(-DAYS);
-  return lastBuckets.map((b) => {
-    const points = b.dataset?.[0]?.point ?? [];
-    const raw = getLatestValueFromPoints(points);
-    const weight = raw != null ? roundToFirstDecimal(raw) : null;
-    const date = formatYmdJst(
-      typeof b.startTimeMillis === "number" ? b.startTimeMillis : startTimeMillis
-    );
+  return Array.from({ length: DAYS }).map((_, i) => {
+    const dayStart = startTimeMillis + i * DAY_MS;
+    const date = formatYmdJst(dayStart);
+    const entry = perDay[i];
+    const weight =
+      entry && !Number.isNaN(entry.value)
+        ? roundToFirstDecimal(entry.value)
+        : null;
     return { date, weight };
   });
 }
