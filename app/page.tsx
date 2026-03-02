@@ -2,8 +2,25 @@
 
 import { signIn, signOut, useSession } from "next-auth/react";
 import { useCallback, useEffect, useState } from "react";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
-type LatestMetrics = { weight: number | null; bodyFat: number | null };
+type WeightTrendPoint = { date: string; weight: number | null };
+
+function formatDateLabel(ymd: string): string {
+  // "YYYY-MM-DD" -> "MM/DD"
+  const m = ymd.slice(5, 7);
+  const d = ymd.slice(8, 10);
+  if (!m || !d) return ymd;
+  return `${m}/${d}`;
+}
 
 export default function Home() {
   const { data: session, status } = useSession();
@@ -14,43 +31,38 @@ export default function Home() {
     type: "success" | "error";
     text: string;
   } | null>(null);
-  const [latestMetrics, setLatestMetrics] = useState<LatestMetrics | null>(null);
-  const [loadingLatest, setLoadingLatest] = useState(true);
+  const [weightTrend, setWeightTrend] = useState<WeightTrendPoint[]>([]);
+  const [loadingTrend, setLoadingTrend] = useState(true);
 
-  const fetchLatest = useCallback(async () => {
+  const fetchTrend = useCallback(async () => {
     if (!session) return;
-    setLoadingLatest(true);
+    setLoadingTrend(true);
     try {
       const res = await fetch("/api/fit");
-      const data = (await res.json()) as
-        | { weight: number | null; bodyFat: number | null }
-        | { error: string };
+      const data = (await res.json()) as WeightTrendPoint[] | { error: string };
       if (!res.ok) {
-        setLatestMetrics({ weight: null, bodyFat: null });
+        setWeightTrend([]);
         return;
       }
       if ("error" in data) {
-        setLatestMetrics({ weight: null, bodyFat: null });
+        setWeightTrend([]);
         return;
       }
-      setLatestMetrics({
-        weight: data.weight ?? null,
-        bodyFat: data.bodyFat ?? null,
-      });
+      setWeightTrend(Array.isArray(data) ? data : []);
     } catch {
-      setLatestMetrics({ weight: null, bodyFat: null });
+      setWeightTrend([]);
     } finally {
-      setLoadingLatest(false);
+      setLoadingTrend(false);
     }
   }, [session]);
 
   useEffect(() => {
     if (status === "authenticated" && session) {
-      fetchLatest();
+      fetchTrend();
     } else if (status !== "loading") {
-      setLoadingLatest(false);
+      setLoadingTrend(false);
     }
-  }, [status, session, fetchLatest]);
+  }, [status, session, fetchTrend]);
 
   const handleSaveToGoogleFit = async () => {
     const weightNum = weight.trim() ? parseFloat(weight) : undefined;
@@ -80,7 +92,7 @@ export default function Home() {
       }
       setSaveMessage({ type: "success", text: "保存しました！" });
       alert("保存しました！");
-      fetchLatest();
+      fetchTrend();
     } catch {
       setSaveMessage({ type: "error", text: "保存に失敗しました" });
     } finally {
@@ -152,35 +164,68 @@ export default function Home() {
           体重・体脂肪率の記録
         </h1>
 
-        {loadingLatest ? (
-          <div className="mb-6 flex items-center justify-center rounded-2xl border border-slate-100 bg-slate-50/50 py-8">
-            <p className="text-sm text-slate-500">Loading...</p>
-          </div>
-        ) : (
-          <div className="mb-6 rounded-2xl border border-sky-100 bg-white p-5 shadow-sm">
-            <h2 className="mb-4 text-sm font-medium text-slate-500">
-              現在の記録
+        <div className="mb-6 rounded-2xl border border-sky-100 bg-white p-5 shadow-sm">
+          <div className="mb-4 flex items-center justify-between gap-4">
+            <h2 className="text-sm font-medium text-slate-600">
+              過去30日間の体重推移
             </h2>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="rounded-xl bg-slate-50 px-4 py-3">
-                <p className="text-xs text-slate-500">体重（kg）</p>
-                <p className="mt-0.5 text-lg font-semibold text-slate-800">
-                  {latestMetrics?.weight != null
-                    ? latestMetrics.weight.toFixed(1)
-                    : "データなし"}
-                </p>
-              </div>
-              <div className="rounded-xl bg-slate-50 px-4 py-3">
-                <p className="text-xs text-slate-500">体脂肪率（%）</p>
-                <p className="mt-0.5 text-lg font-semibold text-slate-800">
-                  {latestMetrics?.bodyFat != null
-                    ? latestMetrics.bodyFat.toFixed(1)
-                    : "データなし"}
-                </p>
-              </div>
-            </div>
+            <button
+              type="button"
+              onClick={fetchTrend}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50"
+            >
+              更新
+            </button>
           </div>
-        )}
+
+          {loadingTrend ? (
+            <div className="flex items-center justify-center py-10">
+              <p className="text-sm text-slate-500">Loading...</p>
+            </div>
+          ) : weightTrend.every((p) => p.weight == null) ? (
+            <div className="flex items-center justify-center py-10">
+              <p className="text-sm text-slate-500">データなし</p>
+            </div>
+          ) : (
+            <div className="h-56 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={weightTrend} margin={{ left: 8, right: 8 }}>
+                  <CartesianGrid stroke="#e5e7eb" strokeDasharray="3 3" />
+                  <XAxis
+                    dataKey="date"
+                    tickFormatter={formatDateLabel}
+                    tick={{ fontSize: 12, fill: "#64748b" }}
+                    axisLine={{ stroke: "#e2e8f0" }}
+                    tickLine={{ stroke: "#e2e8f0" }}
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis
+                    tick={{ fontSize: 12, fill: "#64748b" }}
+                    axisLine={{ stroke: "#e2e8f0" }}
+                    tickLine={{ stroke: "#e2e8f0" }}
+                    width={36}
+                    domain={["auto", "auto"]}
+                  />
+                  <Tooltip
+                    formatter={(value) =>
+                      typeof value === "number" ? [`${value} kg`, "体重"] : [value, "体重"]
+                    }
+                    labelFormatter={(label) => `日付: ${label}`}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="weight"
+                    stroke="#3b82f6"
+                    strokeWidth={2}
+                    dot={false}
+                    connectNulls={false}
+                    isAnimationActive={false}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
 
         <div className="rounded-2xl border border-sky-100 bg-sky-50/50 p-6 shadow-sm">
           <div className="space-y-5">

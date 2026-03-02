@@ -168,15 +168,6 @@ async function findOrCreateDataSource(
   );
 }
 
-/** 現在から24時間前〜1分後のミリ秒（取得期間） */
-const RANGE_START_MS = 24 * 60 * 60 * 1000;
-const RANGE_END_MS = 60 * 1000;
-
-/** ミリ秒をナノ秒（文字列）に変換（オーバーフロー回避） */
-function msToNanos(ms: number): string {
-  return String(BigInt(ms) * BigInt(1_000_000));
-}
-
 /** 1つのデータポイントから数値を取り出す（value[0].fpVal または value[0].intVal） */
 function getNumericValue(
   point: {
@@ -211,112 +202,74 @@ function getLatestValueFromPoints(points: DataPoint[]): number | null {
   return getNumericValue(sorted[0]);
 }
 
-/** データソース一覧から指定 dataTypeName の dataStreamId 一覧を取得 */
-async function listDataSourceIdsByType(
-  accessToken: string,
-  dataTypeName: string
-): Promise<string[]> {
-  const listRes = await fetch(`${FIT_BASE}/dataSources`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!listRes.ok) return [];
-  const list = (await listRes.json()) as {
-    dataSource?: Array<{ dataStreamId: string; dataType?: { name: string } }>;
-  };
-  const sources = list.dataSource ?? [];
-  return sources
-    .filter((s) => s.dataType?.name === dataTypeName)
-    .map((s) => s.dataStreamId);
+type AggregateResponse = {
+  bucket?: Array<{
+    startTimeMillis?: number;
+    endTimeMillis?: number;
+    dataset?: Array<{ point?: DataPoint[] }>;
+  }>;
+};
+
+function formatYmdJst(ms: number): string {
+  const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+  const d = new Date(ms + JST_OFFSET_MS);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
-/** List Data Points API（datasets get）で期間内のポイントを取得し、startTimeNanos が最大の値を返す */
-async function fetchLatestByDatasetsGet(
-  accessToken: string,
-  dataTypeName: string
-): Promise<number | null> {
-  const nowMs = Date.now();
-  const startNs = msToNanos(nowMs - RANGE_START_MS);
-  const endNs = msToNanos(nowMs + RANGE_END_MS);
-  const datasetId = `${startNs}-${endNs}`;
-  const ids = await listDataSourceIdsByType(accessToken, dataTypeName);
-  const allPoints: DataPoint[] = [];
-  for (const dataSourceId of ids) {
-    const url = `${FIT_BASE}/dataSources/${encodeURIComponent(dataSourceId)}/datasets/${encodeURIComponent(datasetId)}`;
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!res.ok) continue;
-    const ds = (await res.json()) as { point?: DataPoint[] };
-    if (ds.point?.length) allPoints.push(...ds.point);
-  }
-  return getLatestValueFromPoints(allPoints);
-}
+type WeightTrendPoint = { date: string; weight: number | null };
 
-/** aggregate：取得期間全体を1バケットにし、その中の「startTimeNanos が最大」のポイントを採用 */
-async function fetchLatestByAggregate(
-  accessToken: string,
-  dataTypeName: string
-): Promise<number | null> {
+/** dataset:aggregate で過去30日分の「日付」と「体重」を返す（1日ごとの最新値） */
+async function fetchWeightTrend(accessToken: string): Promise<WeightTrendPoint[]> {
   const nowMs = Date.now();
-  const startTimeMillis = nowMs - RANGE_START_MS;
-  const endTimeMillis = nowMs + RANGE_END_MS;
-  const durationMillis = endTimeMillis - startTimeMillis;
-  const body = {
-    startTimeMillis,
-    endTimeMillis,
-    aggregateBy: [{ dataTypeName }],
-    bucketByTime: { durationMillis },
-  };
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const DAYS = 30;
+
+  // 直近の書き込みを拾いやすいよう end を少し未来に
+  const endTimeMillis = nowMs + 60 * 1000;
+  const startTimeMillis = endTimeMillis - DAYS * DAY_MS;
+
   const res = await fetch(`${FIT_BASE}/dataset:aggregate`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      startTimeMillis,
+      endTimeMillis,
+      aggregateBy: [{ dataTypeName: "com.google.weight" }],
+      bucketByTime: { durationMillis: DAY_MS },
+    }),
   });
-  if (!res.ok) return null;
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Fit aggregate failed: ${res.status} ${errText}`);
+  }
+
   const data = (await res.json()) as AggregateResponse;
-  const bucket = data.bucket?.[0];
-  const datasets = bucket?.dataset ?? [];
-  const points = datasets[0]?.point ?? [];
-  return getLatestValueFromPoints(points);
-}
-
-type AggregateResponse = {
-  bucket?: Array<{
-    dataset?: Array<{ point?: DataPoint[] }>;
-  }>;
-};
-
-/** 直近の体重・体脂肪率を取得。List Data Points（datasets get）を優先し、取れなければ aggregate を使用 */
-async function fetchLatestBodyMetrics(accessToken: string): Promise<{
-  weight: number | null;
-  bodyFat: number | null;
-}> {
-  let weight = await fetchLatestByDatasetsGet(
-    accessToken,
-    "com.google.weight"
-  );
-  if (weight == null) {
-    weight = await fetchLatestByAggregate(accessToken, "com.google.weight");
+  const buckets = data.bucket ?? [];
+  if (buckets.length === 0) {
+    return Array.from({ length: DAYS }).map((_, i) => {
+      const dayStart = startTimeMillis + i * DAY_MS;
+      return { date: formatYmdJst(dayStart), weight: null };
+    });
   }
 
-  let bodyFat = await fetchLatestByDatasetsGet(
-    accessToken,
-    "com.google.body.fat.percentage"
-  );
-  if (bodyFat == null) {
-    bodyFat = await fetchLatestByAggregate(
-      accessToken,
-      "com.google.body.fat.percentage"
+  // 返却が 30 日より多い/少ないケースに備えて末尾 30 件に揃える
+  const lastBuckets = buckets.slice(-DAYS);
+  return lastBuckets.map((b) => {
+    const points = b.dataset?.[0]?.point ?? [];
+    const raw = getLatestValueFromPoints(points);
+    const weight = raw != null ? roundToFirstDecimal(raw) : null;
+    const date = formatYmdJst(
+      typeof b.startTimeMillis === "number" ? b.startTimeMillis : startTimeMillis
     );
-  }
-
-  return {
-    weight: weight != null ? roundToFirstDecimal(weight) : null,
-    bodyFat: bodyFat != null ? roundToFirstDecimal(bodyFat) : null,
-  };
+    return { date, weight };
+  });
 }
 
 /** 1件のデータポイントを dataset に patch */
@@ -442,8 +395,8 @@ export async function GET(request: NextRequest) {
         { status: 401 }
       );
     }
-    const { weight, bodyFat } = await fetchLatestBodyMetrics(accessToken);
-    return NextResponse.json({ weight, bodyFat });
+    const trend = await fetchWeightTrend(accessToken);
+    return NextResponse.json(trend);
   } catch (err) {
     console.error("Fit API GET error:", err);
     const message = err instanceof Error ? err.message : "取得に失敗しました";
