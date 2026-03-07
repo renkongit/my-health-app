@@ -218,6 +218,9 @@ async function listDataSourceIdsByType(
   const listRes = await fetch(`${FIT_BASE}/dataSources`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
+  if (listRes.status === 401 || listRes.status === 403) {
+    throw new Error("AUTH_ERROR");
+  }
   if (!listRes.ok) return [];
   const list = (await listRes.json()) as {
     dataSource?: Array<{ dataStreamId: string; dataType?: { name: string } }>;
@@ -266,6 +269,9 @@ async function fetchWeightTrend(accessToken: string): Promise<WeightTrendPoint[]
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
+    if (res.status === 401 || res.status === 403) {
+      throw new Error("AUTH_ERROR");
+    }
     if (!res.ok) continue;
     const ds = (await res.json()) as { point?: DataPoint[] };
     if (ds.point?.length) allPoints.push(...ds.point);
@@ -430,10 +436,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(trend);
   } catch (err) {
     console.error("Fit API GET error:", err);
+    if (err instanceof Error && err.message === "AUTH_ERROR") {
+      return NextResponse.json(
+        { error: "REAUTH_REQUIRED" },
+        { status: 401 }
+      );
+    }
     const message = err instanceof Error ? err.message : "取得に失敗しました";
-    return NextResponse.json(
-      { error: message },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

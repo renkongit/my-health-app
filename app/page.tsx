@@ -34,19 +34,33 @@ export default function Home() {
   } | null>(null);
   const [weightTrend, setWeightTrend] = useState<WeightTrendPoint[]>([]);
   const [loadingTrend, setLoadingTrend] = useState(true);
+  const [trendError, setTrendError] = useState<string | null>(null);
 
   const fetchTrend = useCallback(async () => {
     if (!session) return;
     setLoadingTrend(true);
+    setTrendError(null);
     try {
       const res = await fetch("/api/fit");
       const data = (await res.json()) as WeightTrendPoint[] | { error: string };
       if (!res.ok) {
-        setWeightTrend([]);
+        const errorMessage =
+          typeof data === "object" && "error" in data
+            ? data.error
+            : undefined;
+        if (res.status === 401 && errorMessage === "REAUTH_REQUIRED") {
+          setTrendError(
+            "セッションの有効期限が切れました。もう一度ログインしてください。"
+          );
+        } else if (res.status === 401) {
+          setTrendError("ログインが必要です。");
+        } else {
+          setTrendError("体重データの取得に失敗しました。");
+        }
         return;
       }
       if ("error" in data) {
-        setWeightTrend([]);
+        setTrendError("体重データの取得に失敗しました。");
         return;
       }
       setWeightTrend(Array.isArray(data) ? data : []);
@@ -182,6 +196,15 @@ export default function Home() {
           {loadingTrend ? (
             <div className="flex items-center justify-center py-10">
               <p className="text-sm text-slate-500">Loading...</p>
+            </div>
+          ) : trendError ? (
+            <div className="flex flex-col items-center justify-center gap-2 py-8">
+              <p className="text-sm text-red-500">{trendError}</p>
+              {weightTrend.length > 0 && (
+                <p className="text-xs text-slate-400">
+                  （前回取得したデータを表示しています）
+                </p>
+              )}
             </div>
           ) : weightTrend.every((p) => p.weight == null) ? (
             <div className="flex items-center justify-center py-10">
